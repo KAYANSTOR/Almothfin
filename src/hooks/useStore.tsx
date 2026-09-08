@@ -179,7 +179,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const addWorker = async (worker: Omit<Worker, "id">) => {
     if (!activeCompanyId) return;
     const id = crypto.randomUUID();
-    const newWorker = { ...worker, id };
+    const numericNumbers = workers
+      .map((item) => Number.parseInt(String(item.workerNumber || ""), 10))
+      .filter((number) => Number.isFinite(number));
+    const nextWorkerNumber = String(Math.max(0, ...numericNumbers) + 1);
+    const newWorker = { ...worker, workerNumber: nextWorkerNumber, id };
     await setDoc(
       doc(db, "companies", activeCompanyId, "workers", id),
       newWorker,

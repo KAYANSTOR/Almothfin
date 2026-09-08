@@ -302,7 +302,6 @@ export default function Statements() {
                 dynamicData={[
                   { label: "اسم العامل", value: statementData.worker.name || "غير معروف" },
                   { label: "عن شهر", value: statementData.month },
-                  { label: "العامل", value: statementData.worker.name || "غير معروف" },
                   { label: "رصيد مرحّل", value: `${(statementData.summary.previousCarryForward || 0).toLocaleString()} ر.ي` },
                   {
                     label: "تاريخ الإصدار",
@@ -590,6 +589,7 @@ export default function Statements() {
                     ).toLocaleString()}
                     ر.ي
                   </p>
+                  <p className="text-xs text-text-muted mt-1">منها سلف معتمدة: {(statementData.summary.approvedAdvanceDeduction || 0).toLocaleString()} ر.ي</p>
                 </div>
                 <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
                   <p className="text-sm text-text-muted print:text-text-main">

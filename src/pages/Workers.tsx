@@ -80,7 +80,7 @@ export default function Workers() {
     } else {
       setEditingWorker(null);
       setFormData({
-        workerNumber: "",
+        workerNumber: String(Math.max(0, ...workers.map((item) => Number.parseInt(String(item.workerNumber || ""), 10)).filter((number) => Number.isFinite(number))) + 1),
         name: "",
         monthlySalary: "",
         dailyAllowance: "",
@@ -707,18 +707,20 @@ export default function Workers() {
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-text-main mb-1">
-                  رقم العامل
+                  رقم العامل {editingWorker ? "" : "(تلقائي)"}
                 </label>
                 <input
                   type="text"
                   required
                   value={formData.workerNumber}
+                  disabled={!editingWorker}
                   onChange={(e) =>
                     setFormData({ ...formData, workerNumber: e.target.value })
                   }
                   className="w-full px-4 py-2 bg-brand-bg border border-border-main rounded-lg focus:ring-2 focus:ring-primary outline-none text-text-main"
-                  placeholder="مثال: 001"
+                  placeholder="يتم توليده تلقائيا"
                 />
+                {!editingWorker && <p className="mt-1 text-xs text-text-muted">سيتم حفظ الرقم التالي تلقائيا، ولا تحتاج إلى تعديله.</p>}
               </div>
               <div>
                 <label className="block text-sm font-medium text-text-main mb-1">

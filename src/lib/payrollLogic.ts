@@ -32,7 +32,7 @@ export function calculateAdvanceDeduction(
         advance.workerId === workerId &&
         advance.deductionMethod === "automatic" &&
         advance.status === "active" &&
-        advance.date <= `${month}-31`,
+        advance.date.slice(0, 7) === month,
     )
     .reduce((sum, advance) => sum + Math.max(0, advance.amount - advance.paidAmount), 0);
 }
