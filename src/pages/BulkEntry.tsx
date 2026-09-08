@@ -114,9 +114,9 @@ export default function BulkEntry() {
         });
       }
     });
-    addBulkRecords(newRecords).then(() => {
+    addBulkRecords(newRecords).then((result) => {
       setIsSaving(false);
-      alert("تم حفظ البيانات بنجاح للأيام المحددة!");
+      alert(`تم الترحيل بأمان: أضيف ${result.added}، عُدّل ${result.updated}، وتُرك ${result.skipped} مكررًا داخل العملية. البيانات السابقة جاهزة للترحيل الجديد.`);
     });
   };
   if (activeWorkers.length === 0) {

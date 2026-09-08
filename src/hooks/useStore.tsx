@@ -5,7 +5,7 @@ import React, {
   useState,
   useRef,
 } from "react";
-import { Worker, DailyRecord, Company, Advance } from "../types";
+import { Worker, DailyRecord, Company, Advance, PayrollSettlement } from "../types";
 import {
   collection,
   doc,
@@ -19,6 +19,7 @@ import {
   orderBy,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
+import { recordKey } from "../lib/payrollLogic";
 
 interface StoreContextType {
   companies: Company[];
@@ -27,6 +28,7 @@ interface StoreContextType {
   workers: Worker[];
   records: DailyRecord[];
   advances: Advance[];
+  settlements: PayrollSettlement[];
 
   addCompany: (company: Omit<Company, "id" | "createdAt">) => Promise<void>;
   updateCompany: (id: string, company: Partial<Company>) => Promise<void>;
@@ -38,13 +40,14 @@ interface StoreContextType {
   deleteWorker: (id: string) => Promise<void>;
 
   addRecord: (record: Omit<DailyRecord, "id">) => Promise<void>;
-  addBulkRecords: (records: Omit<DailyRecord, "id">[]) => Promise<void>;
+  addBulkRecords: (records: Omit<DailyRecord, "id">[]) => Promise<{ added: number; updated: number; skipped: number }>;
   deleteRecord: (id: string) => Promise<void>;
   updateRecord: (id: string, record: Partial<DailyRecord>) => Promise<void>;
 
   addAdvance: (advance: Omit<Advance, "id">) => Promise<void>;
   updateAdvance: (id: string, advance: Partial<Advance>) => Promise<void>;
   deleteAdvance: (id: string) => Promise<void>;
+  settlePayroll: (settlement: Omit<PayrollSettlement, "id" | "settledAt">) => Promise<void>;
 
   isSyncing: boolean;
   lastSyncTime: string | null;
@@ -60,6 +63,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [records, setRecords] = useState<DailyRecord[]>([]);
   const [advances, setAdvances] = useState<Advance[]>([]);
+  const [settlements, setSettlements] = useState<PayrollSettlement[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
 
@@ -90,6 +94,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!activeCompanyId) {
       setWorkers([]);
       setRecords([]);
+      setSettlements([]);
       return;
     }
 
@@ -105,6 +110,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       activeCompanyId,
       "advances",
     );
+    const settlementsRef = collection(db, "companies", activeCompanyId, "settlements");
 
     const unsubscribeWorkers = onSnapshot(workersRef, (snapshot) => {
       const workersData = snapshot.docs.map(
@@ -129,11 +135,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setAdvances(advancesData);
       setLastSyncTime(new Date().toLocaleTimeString("ar-IQ"));
     });
+    const unsubscribeSettlements = onSnapshot(settlementsRef, (snapshot) => {
+      setSettlements(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as PayrollSettlement));
+    });
 
     return () => {
       unsubscribeWorkers();
       unsubscribeRecords();
       unsubscribeAdvances();
+      unsubscribeSettlements();
     };
   }, [activeCompanyId]);
 
@@ -202,8 +212,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       await updateRecord(existing.id, record);
       return;
     }
-    const id = crypto.randomUUID();
-    const newRecord = { ...record, id };
+    const id = recordKey(record);
+    const newRecord = { ...record, id, source: "sync-safe" };
     await setDoc(
       doc(db, "companies", activeCompanyId, "records", id),
       newRecord,
@@ -211,20 +221,32 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   const addBulkRecords = async (newRecords: Omit<DailyRecord, "id">[]) => {
-    if (!activeCompanyId) return;
+    if (!activeCompanyId) return { added: 0, updated: 0, skipped: newRecords.length };
     const batch = writeBatch(db);
+    const processed = new Set<string>();
+    let added = 0;
+    let updated = 0;
+    let skipped = 0;
     for (const record of newRecords) {
-      const existing = records.find(
-        (r) => r.workerId === record.workerId && r.date === record.date,
-      );
-      if (!existing) {
-        const id = crypto.randomUUID();
-        const newRecord = { ...record, id };
-        const ref = doc(db, "companies", activeCompanyId, "records", id);
-        batch.set(ref, newRecord);
+      const key = recordKey(record);
+      if (processed.has(key)) { skipped++; continue; }
+      processed.add(key);
+      const matches = records.filter((r) => recordKey(r) === key);
+      if (matches.length > 0) {
+        // تحديث السجل الأول فقط: يحافظ على التكرارات القديمة كما هي، ويمنع زيادتها.
+        batch.update(doc(db, "companies", activeCompanyId, "records", matches[0].id), record);
+        updated++;
+      } else {
+        const id = key;
+        batch.set(doc(db, "companies", activeCompanyId, "records", id), { ...record, id, source: "sync-safe" });
+        added++;
       }
     }
     await batch.commit();
+    await setDoc(doc(db, "companies", activeCompanyId, "meta", "lastMigration"), {
+      completedAt: Date.now(), added, updated, skipped, source: "device-sync",
+    });
+    return { added, updated, skipped };
   };
 
   const deleteRecord = async (id: string) => {
@@ -277,6 +299,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const settlePayroll = async (settlement: Omit<PayrollSettlement, "id" | "settledAt">) => {
+    if (!activeCompanyId) return;
+    const id = `${settlement.workerId}_${settlement.month}`;
+    await setDoc(doc(db, "companies", activeCompanyId, "settlements", id), {
+      ...settlement, id, settledAt: Date.now(),
+    });
+  };
+
   return (
     <StoreContext.Provider
       value={{
@@ -290,6 +320,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         workers,
         records,
         advances,
+        settlements,
         addWorker,
         updateWorker,
         deleteWorker,
@@ -300,6 +331,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         addAdvance,
         updateAdvance,
         deleteAdvance,
+        settlePayroll,
         isSyncing,
         lastSyncTime,
       }}

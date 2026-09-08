@@ -11,13 +11,14 @@ import {
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, subMonths } from "date-fns";
 import { ar } from "date-fns/locale";
 import { DailyRecord, AttendanceStatus } from "../types";
 import { ReportHeader } from "../components/ReportHeader";
 import { getMonthlySalaryForDate } from "../lib/salaryHistory";
+import { calculateAdvanceDeduction, calculateCarryForward } from "../lib/payrollLogic";
 export default function Statements() {
-  const { workers, records, advances, updateRecord } = useStore();
+  const { workers, records, advances, settlements, updateRecord, settlePayroll } = useStore();
   const [selectedWorkerId, setSelectedWorkerId] = useState<string>("");
   const [startDate, setStartDate] = useState<string>(
     format(new Date(), "yyyy-MM-01"),
@@ -122,14 +123,17 @@ export default function Statements() {
           }
         });
 
-        const netSalary = totalEarned - totalAdvances - totalDiscounts - totalAllowance;
+        const approvedAdvanceDeduction = calculateAdvanceDeduction(w.id, month, advances);
+        const previousCarryForward = settlements.find((item) => item.workerId === w.id && item.month === format(subMonths(parseISO(`${month}-01`), 1), "yyyy-MM"))?.carryForward || 0;
+        const netSalary = totalEarned - totalAdvances - approvedAdvanceDeduction - totalDiscounts - totalAllowance + previousCarryForward;
         allReports.push({
           worker: w,
           month,
           records: monthRecords,
           summary: {
             totalEarned: Math.round(totalEarned),
-            totalAdvances,
+            totalAdvances: totalAdvances + approvedAdvanceDeduction,
+            approvedAdvanceDeduction,
             totalAllowance,
             totalDiscounts: Math.round(totalDiscounts),
             netSalary: Math.round(netSalary),
@@ -137,13 +141,26 @@ export default function Statements() {
             daysHalf,
             daysAbsent,
             dailyRate: Math.round(lastDailyRate),
+            previousCarryForward,
           },
         });
       });
     });
 
     return allReports;
-  }, [selectedWorkerId, activeWorkers, startDate, endDate, records]);
+  }, [selectedWorkerId, activeWorkers, startDate, endDate, records, advances, settlements]);
+  const handleSettle = async (statementData: any) => {
+    const settledAmount = Number(window.prompt(`أدخل المبلغ المصروف للعامل ${statementData.worker.name}:`, String(statementData.summary.netSalary))) || 0;
+    await settlePayroll({
+      workerId: statementData.worker.id,
+      month: statementData.month,
+      netSalary: statementData.summary.netSalary,
+      settledAmount,
+      carryForward: calculateCarryForward(statementData.summary.netSalary, settledAmount),
+      note: "اعتماد مستحقات من كشف الحساب",
+    });
+    alert("تم اعتماد المستحقات، وسيظهر الرصيد المتبقي في الكشف التالي.");
+  };
   const handlePrint = () => {
     window.print();
   };
@@ -285,6 +302,8 @@ export default function Statements() {
                 dynamicData={[
                   { label: "اسم العامل", value: statementData.worker.name || "غير معروف" },
                   { label: "عن شهر", value: statementData.month },
+                  { label: "العامل", value: statementData.worker.name || "غير معروف" },
+                  { label: "رصيد مرحّل", value: `${(statementData.summary.previousCarryForward || 0).toLocaleString()} ر.ي` },
                   {
                     label: "تاريخ الإصدار",
                     value: new Date().toLocaleDateString("ar-IQ"),
@@ -533,6 +552,7 @@ export default function Statements() {
                 )}
               </div>
               {/* Summary Cards */}
+              <div className="flex justify-end mb-2 print:hidden"><button type="button" onClick={() => handleSettle(statementData)} className="px-4 py-2 rounded-xl bg-success text-white font-bold hover:bg-emerald-700">تأكيد صرف المستحقات</button></div>
               <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 print-summary-grid mt-6 print:mt-1">
                 <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
                   <p className="text-sm text-text-muted print:text-text-main">

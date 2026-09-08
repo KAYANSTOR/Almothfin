@@ -14,6 +14,7 @@ import {
   Building2,
   ChevronDown,
   WifiOff,
+  Bell,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useStore } from "../hooks/useStore";
@@ -24,6 +25,9 @@ export function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    typeof Notification !== "undefined" && Notification.permission === "granted",
+  );
   const {
     isSyncing,
     lastSyncTime,
@@ -46,6 +50,26 @@ export function Layout() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+  useEffect(() => {
+    const notifyAtMidnight = () => {
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+      const now = new Date();
+      if (now.getHours() !== 0 || now.getMinutes() !== 0) return;
+      const key = `attendance-notification-${now.toISOString().slice(0, 10)}`;
+      if (localStorage.getItem(key)) return;
+      new Notification("تذكير تسجيل حضور العمال", { body: "حان وقت تسجيل حضور العمال لليوم الجديد.", icon: "/icon-192.png", tag: "daily-attendance" });
+      localStorage.setItem(key, "1");
+    };
+    const timer = window.setInterval(notifyAtMidnight, 30_000);
+    notifyAtMidnight();
+    return () => window.clearInterval(timer);
+  }, []);
+  const enableNotifications = async () => {
+    if (typeof Notification === "undefined") return alert("المتصفح لا يدعم إشعارات الجهاز.");
+    const permission = await Notification.requestPermission();
+    setNotificationsEnabled(permission === "granted");
+    if (permission === "granted") alert("تم تفعيل تذكير تسجيل الحضور عند الساعة 12 ليلاً على هذا الجهاز.");
+  };
   const navItems = [
     { name: "لوحة التحكم", path: "/", icon: LayoutDashboard },
     { name: "إدارة العمال", path: "/workers", icon: Users },
@@ -231,6 +255,9 @@ export function Layout() {
             </div>{" "}
           </div>{" "}
           <div className="flex items-center space-x-2 space-x-reverse">
+            <button type="button" onClick={enableNotifications} className={cn("p-2 rounded-xl transition-colors", notificationsEnabled ? "text-success bg-success/10" : "text-text-muted hover:bg-brand-bg")} title="تفعيل إشعارات الحضور عند منتصف الليل">
+              <Bell className="w-5 h-5" />
+            </button>
             {" "}
             {!isOnline && (
               <div className="flex items-center text-xs text-danger font-bold mx-2 bg-danger/10 px-3 py-1.5 rounded-full">

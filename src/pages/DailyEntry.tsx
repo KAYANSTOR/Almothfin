@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useStore } from "../hooks/useStore";
-import { Save, Calendar, Bot, Wand2, Loader2, AlertCircle } from "lucide-react";
+import { Save, Calendar, Bot, Wand2, Loader2, AlertCircle, Trash2 } from "lucide-react";
 import { AttendanceStatus } from "../types";
 import { parseAttendanceText } from "../lib/fastAttendanceParser";
 export default function DailyEntry() {
-  const { workers, records, addBulkRecords } = useStore();
+  const { workers, records, addBulkRecords, deleteRecord } = useStore();
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split("T")[0],
   );
@@ -142,10 +142,16 @@ export default function DailyEntry() {
         });
       }
     });
-    addBulkRecords(newRecords).then(() => {
+    addBulkRecords(newRecords).then((result) => {
       setIsSaving(false);
-      alert("تم حفظ السجلات بنجاح!");
+      alert(`تم الترحيل بأمان: أضيف ${result.added}، عُدّل ${result.updated}، وتُرك ${result.skipped} مكررًا داخل العملية.`);
     });
+  };
+  const handleDeleteWorkerDay = async (workerId: string, workerName: string) => {
+    const record = records.find((item) => item.workerId === workerId && item.date === selectedDate);
+    if (!record || !window.confirm(`حذف حضور ${workerName} ليوم ${selectedDate}؟`)) return;
+    await deleteRecord(record.id);
+    alert("تم حذف سجل هذا العامل لهذا اليوم فقط.");
   };
   if (activeWorkers.length === 0) {
     return (
@@ -234,6 +240,7 @@ export default function DailyEntry() {
                 >
                   ملاحظات
                 </th>
+                <th className="px-4 py-3 text-sm font-semibold text-text-main">إجراء</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-main">
@@ -328,6 +335,9 @@ export default function DailyEntry() {
                         className="w-full px-3 py-2 bg-surface border border-border-main rounded-lg focus:ring-2 focus:ring-primary outline-none text-text-main transition-colors"
                       />
                     </td>
+                    <td className="px-4 py-3">
+                      {records.some((item) => item.workerId === worker.id && item.date === selectedDate) && <button type="button" onClick={() => handleDeleteWorkerDay(worker.id, worker.name)} className="text-danger hover:bg-danger/10 p-2 rounded-lg" title="حذف حضور هذا العامل لهذا اليوم"><Trash2 className="w-4 h-4" /></button>}
+                    </td>
                   </tr>
                 );
               })}
@@ -350,7 +360,7 @@ export default function DailyEntry() {
                 className="p-4 space-y-4 hover:bg-brand-bg transition-colors"
               >
                 <div className="font-bold text-lg text-text-main border-b border-border-main pb-2">
-                  {worker.name}
+                  <div className="flex items-center justify-between"><span>{worker.name}</span>{records.some((item) => item.workerId === worker.id && item.date === selectedDate) && <button type="button" onClick={() => handleDeleteWorkerDay(worker.id, worker.name)} className="text-danger p-2" title="حذف حضور هذا العامل"><Trash2 className="w-4 h-4" /></button>}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>

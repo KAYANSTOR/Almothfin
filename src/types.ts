@@ -51,6 +51,17 @@ export interface Advance {
   status: "active" | "completed";
 }
 
+export interface PayrollSettlement {
+  id: string;
+  workerId: string;
+  month: string;
+  netSalary: number;
+  settledAmount: number;
+  carryForward: number;
+  settledAt: number;
+  note?: string;
+}
+
 export interface DashboardStats {
   totalWorkers: number;
   presentToday: number;
