@@ -8,6 +8,11 @@ import {
   Edit2,
   X,
   Check,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  RotateCcw,
+  Wallet,
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
@@ -18,7 +23,7 @@ import { ReportHeader } from "../components/ReportHeader";
 import { getMonthlySalaryForDate } from "../lib/salaryHistory";
 import { calculateAdvanceDeduction, calculateCarryForward } from "../lib/payrollLogic";
 export default function Statements() {
-  const { workers, records, advances, settlements, updateRecord, settlePayroll } = useStore();
+  const { workers, records, advances, settlements, updateRecord, settlePayroll, deleteSettlement } = useStore();
   const [selectedWorkerId, setSelectedWorkerId] = useState<string>("");
   const [startDate, setStartDate] = useState<string>(
     format(new Date(), "yyyy-MM-01"),
@@ -26,6 +31,20 @@ export default function Statements() {
   const [endDate, setEndDate] = useState<string>(
     format(new Date(), "yyyy-MM-dd"),
   );
+  const [settlementFilter, setSettlementFilter] = useState<"all" | "unsettled" | "settled">("all");
+  const [settleModalData, setSettleModalData] = useState<{
+    worker: any;
+    month: string;
+    grossNetSalary: number;
+    settledAmount: number;
+    existingSettlement?: any;
+  } | null>(null);
+  const [settleForm, setSettleForm] = useState({
+    settledAmount: "",
+    date: format(new Date(), "yyyy-MM-dd"),
+    note: "",
+  });
+
   const printRef = useRef<HTMLDivElement>(null);
   const [editingRecord, setEditingRecord] = useState<DailyRecord | null>(null);
   const [formData, setFormData] = useState({
@@ -66,7 +85,64 @@ export default function Statements() {
       closeEditModal();
     }
   };
-  const statementsToRender = useMemo(() => {
+
+  const openSettleModal = (statementData: any) => {
+    const gross = statementData.summary.grossNetSalary ?? statementData.summary.netSalary;
+    const existing = statementData.summary.settlementDetails;
+    setSettleModalData({
+      worker: statementData.worker,
+      month: statementData.month,
+      grossNetSalary: gross,
+      settledAmount: existing ? existing.settledAmount : 0,
+      existingSettlement: existing,
+    });
+    setSettleForm({
+      settledAmount: existing ? String(existing.settledAmount) : String(gross > 0 ? gross : 0),
+      date: existing?.settledAt
+        ? format(new Date(existing.settledAt), "yyyy-MM-dd")
+        : format(new Date(), "yyyy-MM-dd"),
+      note: existing?.note || "صرف مستحقات الراتب",
+    });
+  };
+
+  const closeSettleModal = () => {
+    setSettleModalData(null);
+  };
+
+  const handleConfirmSettlement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settleModalData) return;
+    const amount = Number(settleForm.settledAmount);
+    if (!Number.isFinite(amount) || amount < 0) {
+      alert("يرجى إدخال مبلغ مصروف صحيح.");
+      return;
+    }
+    const settledTime = settleForm.date ? new Date(settleForm.date).getTime() : Date.now();
+    await settlePayroll({
+      workerId: settleModalData.worker.id,
+      month: settleModalData.month,
+      netSalary: settleModalData.grossNetSalary,
+      settledAmount: amount,
+      carryForward: calculateCarryForward(settleModalData.grossNetSalary, amount),
+      settledAt: settledTime,
+      note: settleForm.note.trim() || (amount >= settleModalData.grossNetSalary ? "سداد مستحقات بالكامل" : "سداد جزئي للمستحقات"),
+      status: amount >= settleModalData.grossNetSalary ? "settled" : "partial",
+    });
+    closeSettleModal();
+  };
+
+  const handleCancelSettlement = async (statementData: any) => {
+    if (
+      !window.confirm(
+        `هل تريد بالتأكيد إلغاء سداد مستحقات شهر ${statementData.month} للعامل ${statementData.worker.name}؟\nستعود المستحقات كغير مسددة وسيظهر الرصيد كصافي متبقي في كشف الحساب.`,
+      )
+    ) {
+      return;
+    }
+    await deleteSettlement(`${statementData.worker.id}_${statementData.month}`);
+  };
+
+  const allStatements = useMemo(() => {
     if (!selectedWorkerId || !startDate || !endDate) return [];
     
     const workersToProcess = selectedWorkerId === "all" 
@@ -75,7 +151,7 @@ export default function Statements() {
 
     if (workersToProcess.length === 0) return [];
 
-    const allReports = [];
+    const allReports: any[] = [];
 
     workersToProcess.forEach(w => {
       const filteredRecords = records
@@ -84,7 +160,7 @@ export default function Statements() {
       
       if (filteredRecords.length === 0) return;
 
-      const groupedByMonth = {};
+      const groupedByMonth: Record<string, DailyRecord[]> = {};
       filteredRecords.forEach((r) => {
         const monthStr = r.date.substring(0, 7);
         if (!groupedByMonth[monthStr]) groupedByMonth[monthStr] = [];
@@ -124,8 +200,21 @@ export default function Statements() {
         });
 
         const approvedAdvanceDeduction = calculateAdvanceDeduction(w.id, month, advances);
-        const previousCarryForward = settlements.find((item) => item.workerId === w.id && item.month === format(subMonths(parseISO(`${month}-01`), 1), "yyyy-MM"))?.carryForward || 0;
-        const netSalary = totalEarned - totalAdvances - approvedAdvanceDeduction - totalDiscounts - totalAllowance + previousCarryForward;
+        const prevMonthStr = format(subMonths(parseISO(`${month}-01`), 1), "yyyy-MM");
+        const prevSettlement = settlements.find((item) => item.workerId === w.id && item.month === prevMonthStr);
+        const previousCarryForward = prevSettlement?.carryForward || 0;
+        
+        const grossNetSalary = Math.round(
+          totalEarned - totalAdvances - approvedAdvanceDeduction - totalDiscounts - totalAllowance + previousCarryForward,
+        );
+
+        const existingSettlement = settlements.find((item) => item.workerId === w.id && item.month === month);
+        const isSettled = !!existingSettlement;
+        const settledAmount = existingSettlement ? Number(existingSettlement.settledAmount) || 0 : 0;
+        const isFullySettled = existingSettlement ? settledAmount >= grossNetSalary : false;
+        const isPartiallySettled = existingSettlement ? settledAmount > 0 && settledAmount < grossNetSalary : false;
+        const remainingNetSalary = existingSettlement ? Math.max(0, grossNetSalary - settledAmount) : grossNetSalary;
+
         allReports.push({
           worker: w,
           month,
@@ -136,7 +225,14 @@ export default function Statements() {
             approvedAdvanceDeduction,
             totalAllowance,
             totalDiscounts: Math.round(totalDiscounts),
-            netSalary: Math.round(netSalary),
+            grossNetSalary,
+            settledAmount,
+            remainingNetSalary,
+            netSalary: remainingNetSalary,
+            isSettled,
+            isFullySettled,
+            isPartiallySettled,
+            settlementDetails: existingSettlement,
             daysPresent,
             daysHalf,
             daysAbsent,
@@ -149,18 +245,34 @@ export default function Statements() {
 
     return allReports;
   }, [selectedWorkerId, activeWorkers, startDate, endDate, records, advances, settlements]);
-  const handleSettle = async (statementData: any) => {
-    const settledAmount = Number(window.prompt(`أدخل المبلغ المصروف للعامل ${statementData.worker.name}:`, String(statementData.summary.netSalary))) || 0;
-    await settlePayroll({
-      workerId: statementData.worker.id,
-      month: statementData.month,
-      netSalary: statementData.summary.netSalary,
-      settledAmount,
-      carryForward: calculateCarryForward(statementData.summary.netSalary, settledAmount),
-      note: "اعتماد مستحقات من كشف الحساب",
-    });
-    alert("تم اعتماد المستحقات، وسيظهر الرصيد المتبقي في الكشف التالي.");
-  };
+
+  const overallMetrics = useMemo(() => {
+    const totalGross = allStatements.reduce((sum, s) => sum + s.summary.grossNetSalary, 0);
+    const totalSettled = allStatements.reduce((sum, s) => sum + s.summary.settledAmount, 0);
+    const totalRemaining = allStatements.reduce((sum, s) => sum + s.summary.remainingNetSalary, 0);
+    const fullySettledCount = allStatements.filter((s) => s.summary.isFullySettled).length;
+    const partiallySettledCount = allStatements.filter((s) => s.summary.isPartiallySettled).length;
+    const unsettledCount = allStatements.filter((s) => !s.summary.isSettled).length;
+    return {
+      totalGross,
+      totalSettled,
+      totalRemaining,
+      totalCount: allStatements.length,
+      fullySettledCount,
+      partiallySettledCount,
+      unsettledCount,
+    };
+  }, [allStatements]);
+
+  const statementsToRender = useMemo(() => {
+    if (settlementFilter === "unsettled") {
+      return allStatements.filter((r) => !r.summary.isFullySettled);
+    }
+    if (settlementFilter === "settled") {
+      return allStatements.filter((r) => r.summary.isSettled);
+    }
+    return allStatements;
+  }, [allStatements, settlementFilter]);
   const handlePrint = () => {
     window.print();
   };
@@ -214,7 +326,12 @@ export default function Statements() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 print:hidden">
-        <h2 className="text-2xl font-bold text-text-main">كشوفات الحساب</h2>
+        <div>
+          <h2 className="text-2xl font-bold text-text-main">كشوفات الحساب وسداد المستحقات</h2>
+          <p className="text-xs text-text-muted mt-1">
+            متابعة مستحقات العاملين، كشوفات الفترات، وسداد المستحقات مع تتبع المتبقي
+          </p>
+        </div>
         {statementsToRender && statementsToRender.length > 0 && (
           <div className="flex items-center space-x-2 space-x-reverse">
             <button
@@ -232,6 +349,7 @@ export default function Statements() {
           </div>
         )}
       </div>
+
       <div className="bg-surface shadow-sm rounded-2xl border border-border-main p-6 print:hidden">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="space-y-2">
@@ -285,6 +403,88 @@ export default function Statements() {
           </div>
         </div>
       </div>
+
+      {/* Overall Summary & Filter Tabs (Screen Only) */}
+      {allStatements.length > 0 && (
+        <div className="bg-surface shadow-sm rounded-2xl border border-border-main p-5 print:hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 pb-3 border-b border-border-main">
+            <div>
+              <h3 className="font-bold text-text-main text-base">
+                ملخص مستحقات الفترات المحددة
+              </h3>
+              <p className="text-xs text-text-muted mt-0.5">
+                إجمالي {overallMetrics.totalCount} فترة — (
+                <span className="text-emerald-600 font-semibold">{overallMetrics.fullySettledCount} مسددة بالكامل</span>،{" "}
+                <span className="text-amber-600 font-semibold">{overallMetrics.partiallySettledCount} مسددة جزئياً</span>،{" "}
+                <span className="text-danger font-semibold">{overallMetrics.unsettledCount} غير مسددة</span>)
+              </p>
+            </div>
+
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-1.5 bg-brand-bg p-1 rounded-xl border border-border-main text-xs font-semibold self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setSettlementFilter("all")}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  settlementFilter === "all"
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-text-muted hover:text-text-main"
+                }`}
+              >
+                جميع الفترات ({overallMetrics.totalCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettlementFilter("unsettled")}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  settlementFilter === "unsettled"
+                    ? "bg-amber-600 text-white shadow-sm"
+                    : "text-text-muted hover:text-text-main"
+                }`}
+              >
+                غير المسددة فقط ({overallMetrics.unsettledCount + overallMetrics.partiallySettledCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettlementFilter("settled")}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  settlementFilter === "settled"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-text-muted hover:text-text-main"
+                }`}
+              >
+                المسددة فقط ({overallMetrics.fullySettledCount + overallMetrics.partiallySettledCount})
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="bg-brand-bg/70 rounded-xl p-3.5 border border-border-main">
+              <span className="text-xs text-text-muted block mb-1">إجمالي المستحقات الإجمالية</span>
+              <span className="text-xl font-bold text-text-main">
+                {overallMetrics.totalGross.toLocaleString()} ر.ي
+              </span>
+            </div>
+            <div className="bg-emerald-500/10 rounded-xl p-3.5 border border-emerald-500/20">
+              <span className="text-xs text-emerald-800 dark:text-emerald-300 block mb-1">
+                إجمالي المبالغ المسددة (المصروفة)
+              </span>
+              <span className="text-xl font-bold text-emerald-700 dark:text-emerald-400">
+                {overallMetrics.totalSettled.toLocaleString()} ر.ي
+              </span>
+            </div>
+            <div className="bg-amber-500/10 rounded-xl p-3.5 border border-amber-500/20">
+              <span className="text-xs text-amber-800 dark:text-amber-300 block mb-1">
+                صافي المستحقات المتبقية غير المسددة
+              </span>
+              <span className="text-xl font-black text-amber-700 dark:text-amber-400">
+                {overallMetrics.totalRemaining.toLocaleString()} ر.ي
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {statementsToRender && statementsToRender.length > 0 ? (
         <div
           ref={printRef}
@@ -294,8 +494,100 @@ export default function Statements() {
           {statementsToRender.map((statementData, index) => (
             <div
               key={`${statementData.worker.id}-${statementData.month}`}
-              className={`print-month-container space-y-2 ${index > 0 ? 'print:break-before-page' : ''}`}
+              className={`print-month-container space-y-3 mb-8 ${index > 0 ? 'print:break-before-page' : ''}`}
             >
+              {/* Screen Settlement Status Banner */}
+              <div className="print:hidden">
+                {statementData.summary.isFullySettled ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl px-4 py-3 text-emerald-900 dark:text-emerald-200">
+                    <div className="flex items-center gap-2.5">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                      <div>
+                        <p className="font-bold text-sm">
+                          تم سداد مستحقات هذه الفترة بالكامل ({statementData.month})
+                        </p>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          المبلغ المصروف: <strong className="text-emerald-700 dark:text-emerald-400">{statementData.summary.settledAmount.toLocaleString()} ر.ي</strong>
+                          {statementData.summary.settlementDetails?.settledAt && (
+                            <span className="mr-2">
+                              بتاريخ {format(new Date(statementData.summary.settlementDetails.settledAt), "yyyy-MM-dd")}
+                            </span>
+                          )}
+                          {statementData.summary.settlementDetails?.note && (
+                            <span className="mr-2">({statementData.summary.settlementDetails.note})</span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openSettleModal(statementData)}
+                        className="px-3 py-1.5 rounded-lg border border-border-main bg-surface text-text-main text-xs font-semibold hover:bg-brand-bg transition-colors"
+                      >
+                        تعديل الصرف
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCancelSettlement(statementData)}
+                        className="px-3 py-1.5 rounded-lg bg-danger/10 text-danger text-xs font-semibold hover:bg-danger/20 transition-colors"
+                      >
+                        إلغاء السداد
+                      </button>
+                    </div>
+                  </div>
+                ) : statementData.summary.isPartiallySettled ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl px-4 py-3 text-amber-900 dark:text-amber-200">
+                    <div className="flex items-center gap-2.5">
+                      <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                      <div>
+                        <p className="font-bold text-sm">
+                          تم سداد جزء من مستحقات الفترة ({statementData.month})
+                        </p>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          المصروف حتى الآن: <strong className="text-emerald-700 dark:text-emerald-400">{statementData.summary.settledAmount.toLocaleString()} ر.ي</strong>
+                          {" — "}
+                          المتبقي غير المسدد: <strong className="text-amber-700 dark:text-amber-400">{statementData.summary.netSalary.toLocaleString()} ر.ي</strong>
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openSettleModal(statementData)}
+                        className="px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary/90 transition-colors"
+                      >
+                        استكمال الصرف
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCancelSettlement(statementData)}
+                        className="px-3 py-1.5 rounded-lg bg-danger/10 text-danger text-xs font-semibold hover:bg-danger/20 transition-colors"
+                      >
+                        إلغاء السداد
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-brand-bg border border-border-main rounded-2xl px-4 py-3">
+                    <div className="flex items-center gap-2 text-text-muted">
+                      <Clock className="w-4 h-4 text-warning shrink-0" />
+                      <span className="text-xs font-semibold text-text-main">
+                        مستحقات الفترة غير مسددة (بانتظار الصرف):{" "}
+                        <strong className="text-primary">{statementData.summary.grossNetSalary.toLocaleString()} ر.ي</strong>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openSettleModal(statementData)}
+                      className="px-4 py-2 rounded-xl bg-success text-white text-xs font-bold hover:bg-emerald-700 shadow-sm flex items-center gap-1.5 transition-colors"
+                    >
+                      <Check className="w-4 h-4" /> تأكيد صرف المستحقات
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Print Header - Unified Report Header */}
               <ReportHeader
                 title="كشف حساب العامل"
@@ -303,6 +595,18 @@ export default function Statements() {
                   { label: "اسم العامل", value: statementData.worker.name || "غير معروف" },
                   { label: "عن شهر", value: statementData.month },
                   { label: "رصيد مرحّل", value: `${(statementData.summary.previousCarryForward || 0).toLocaleString()} ر.ي` },
+                  {
+                    label: "حالة السداد",
+                    value: statementData.summary.isFullySettled
+                      ? `مسدد بالكامل (${statementData.summary.settledAmount.toLocaleString()} ر.ي)`
+                      : statementData.summary.isPartiallySettled
+                        ? `مسدد جزئياً (المتبقي: ${statementData.summary.netSalary.toLocaleString()} ر.ي)`
+                        : "غير مسدد (قيد الصرف)",
+                  },
+                  {
+                    label: "الصافي المتبقي",
+                    value: `${statementData.summary.netSalary.toLocaleString()} ر.ي`,
+                  },
                   {
                     label: "تاريخ الإصدار",
                     value: new Date().toLocaleDateString("ar-IQ"),
@@ -551,64 +855,105 @@ export default function Statements() {
                 )}
               </div>
               {/* Summary Cards */}
-              <div className="flex justify-end mb-2 print:hidden"><button type="button" onClick={() => handleSettle(statementData)} className="px-4 py-2 rounded-xl bg-success text-white font-bold hover:bg-emerald-700">تأكيد صرف المستحقات</button></div>
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 print-summary-grid mt-6 print:mt-1">
-                <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
-                  <p className="text-sm text-text-muted print:text-text-main">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 print-summary-grid mt-6 print:mt-1">
+                <div className="bg-surface rounded-2xl p-4 border border-border-main shadow-sm print-summary-card">
+                  <p className="text-xs text-text-muted print:text-text-main">
                     الراتب المستحق
                   </p>
-                  <p className="text-xl font-bold text-text-main mt-1 value">
-                    {(statementData.summary.totalEarned || 0).toLocaleString()}
+                  <p className="text-lg font-bold text-text-main mt-1 value">
+                    {(statementData.summary.totalEarned || 0).toLocaleString()}{" "}
                     ر.ي
                   </p>
-                  <p className="text-xs text-text-muted mt-1 print:block print:text-[8px] print:font-bold">
+                  <p className="text-[11px] text-text-muted mt-0.5 print:block print:text-[8px]">
                     (
                     {statementData.summary.daysPresent +
-                      statementData.summary.daysHalf * 0.5}
+                      statementData.summary.daysHalf * 0.5}{" "}
                     يوم)
                   </p>
                 </div>
-                <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
-                  <p className="text-sm text-text-muted print:text-text-main">
+
+                <div className="bg-surface rounded-2xl p-4 border border-border-main shadow-sm print-summary-card">
+                  <p className="text-xs text-text-muted print:text-text-main">
                     إجمالي الصرفيات
                   </p>
-                  <p className="text-xl font-bold text-danger mt-1 value print:text-danger">
+                  <p className="text-lg font-bold text-danger mt-1 value print:text-danger">
                     {(
                       statementData.summary.totalAllowance || 0
-                    ).toLocaleString()}
+                    ).toLocaleString()}{" "}
                     ر.ي
                   </p>
                 </div>
-                <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
-                  <p className="text-sm text-text-muted print:text-text-main">
+
+                <div className="bg-surface rounded-2xl p-4 border border-border-main shadow-sm print-summary-card">
+                  <p className="text-xs text-text-muted print:text-text-main">
                     إجمالي السحبيات
                   </p>
-                  <p className="text-xl font-bold text-danger mt-1 value print:text-danger">
+                  <p className="text-lg font-bold text-danger mt-1 value print:text-danger">
                     {(
                       statementData.summary.totalAdvances || 0
-                    ).toLocaleString()}
+                    ).toLocaleString()}{" "}
                     ر.ي
                   </p>
-                  <p className="text-xs text-text-muted mt-1">منها سلف معتمدة: {(statementData.summary.approvedAdvanceDeduction || 0).toLocaleString()} ر.ي</p>
+                  {statementData.summary.approvedAdvanceDeduction > 0 && (
+                    <p className="text-[10px] text-text-muted mt-0.5">
+                      منها سلف:{" "}
+                      {statementData.summary.approvedAdvanceDeduction.toLocaleString()}{" "}
+                      ر.ي
+                    </p>
+                  )}
                 </div>
-                <div className="bg-surface rounded-2xl p-4 lg:p-5 border border-border-main shadow-sm print-summary-card">
-                  <p className="text-sm text-text-muted print:text-text-main">
+
+                <div className="bg-surface rounded-2xl p-4 border border-border-main shadow-sm print-summary-card">
+                  <p className="text-xs text-text-muted print:text-text-main">
                     إجمالي الخصومات
                   </p>
-                  <p className="text-xl font-bold text-danger mt-1 value print:text-danger">
+                  <p className="text-lg font-bold text-danger mt-1 value print:text-danger">
                     {(
                       statementData.summary.totalDiscounts || 0
-                    ).toLocaleString()}
+                    ).toLocaleString()}{" "}
                     ر.ي
                   </p>
                 </div>
-                <div className="bg-primary rounded-2xl p-4 lg:p-5 shadow-sm text-white print-summary-card print:bg-surface print:text-black print:border-2 print:border-black">
-                  <p className="text-brand-bg text-sm print:text-black print:font-extrabold">
-                    الصافي المتبقي
+
+                <div className="bg-surface rounded-2xl p-4 border border-border-main shadow-sm print-summary-card">
+                  <p className="text-xs text-text-muted print:text-text-main">
+                    المبلغ المسدد (المصروف)
                   </p>
-                  <p className="text-2xl font-bold mt-1 value print:text-black print:font-black">
-                    {(statementData.summary.netSalary || 0).toLocaleString()}
+                  <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 value print:text-emerald-700">
+                    {(
+                      statementData.summary.settledAmount || 0
+                    ).toLocaleString()}{" "}
                     ر.ي
+                  </p>
+                  <p className="text-[10px] text-text-muted mt-0.5">
+                    {statementData.summary.isFullySettled
+                      ? "✓ مسدد بالكامل"
+                      : statementData.summary.isPartiallySettled
+                        ? "⚠ مسدد جزئياً"
+                        : "لم يصرف بعد"}
+                  </p>
+                </div>
+
+                <div
+                  className={`rounded-2xl p-4 shadow-sm text-white print-summary-card print:bg-surface print:text-black print:border-2 print:border-black ${
+                    statementData.summary.isFullySettled
+                      ? "bg-emerald-700"
+                      : statementData.summary.isPartiallySettled
+                        ? "bg-amber-600"
+                        : "bg-primary"
+                  }`}
+                >
+                  <p className="text-brand-bg text-xs print:text-black print:font-extrabold">
+                    الصافي المتبقي غير المسدد
+                  </p>
+                  <p className="text-xl font-black mt-1 value print:text-black print:font-black">
+                    {(statementData.summary.netSalary || 0).toLocaleString()}{" "}
+                    ر.ي
+                  </p>
+                  <p className="text-[10px] text-white/80 mt-0.5 print:hidden">
+                    {statementData.summary.isFullySettled
+                      ? "تم تسوية المستحق (0 ر.ي)"
+                      : "مستحق بانتظار الصرف"}
                   </p>
                 </div>
               </div>
@@ -624,6 +969,192 @@ export default function Statements() {
       ) : (
         <div className="text-center py-12 text-text-muted print:hidden">
           {selectedWorkerId ? "لا توجد سجلات في الفترة المحددة" : "يرجى تحديد العامل (أو الكل) والفترة الزمنية"}
+        </div>
+      )}
+
+      {/* Settle Modal */}
+      {settleModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-surface rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in duration-200 border border-border-main">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border-main bg-brand-bg/50">
+              <div className="flex items-center gap-2">
+                <Wallet className="w-5 h-5 text-primary" />
+                <h3 className="text-base font-bold text-text-main">
+                  {settleModalData.existingSettlement
+                    ? "تعديل صرف مستحقات الفترة"
+                    : "تأكيد صرف مستحقات العامل"}
+                </h3>
+              </div>
+              <button
+                onClick={closeSettleModal}
+                className="text-text-muted hover:text-text-main transition-colors p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleConfirmSettlement} className="p-5 space-y-4">
+              <div className="bg-brand-bg p-3.5 rounded-xl border border-border-main space-y-1.5 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-text-muted">اسم العامل:</span>
+                  <span className="font-bold text-text-main">
+                    {settleModalData.worker.name} (
+                    {settleModalData.worker.workerNumber})
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">عن شهر:</span>
+                  <span className="font-bold text-text-main" dir="ltr">
+                    {settleModalData.month}
+                  </span>
+                </div>
+                <div className="flex justify-between pt-1 border-t border-border-main/50">
+                  <span className="text-text-muted">إجمالي صافي المستحقات:</span>
+                  <span className="font-black text-primary text-sm">
+                    {settleModalData.grossNetSalary.toLocaleString()} ر.ي
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-text-main">
+                    المبلغ المصروف فعلياً (ر.ي)
+                  </label>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettleForm({
+                          ...settleForm,
+                          settledAmount: String(
+                            Math.max(0, settleModalData.grossNetSalary),
+                          ),
+                        })
+                      }
+                      className="text-[11px] text-primary hover:underline font-semibold bg-primary/10 px-2 py-0.5 rounded"
+                    >
+                      كامل المستحق (
+                      {Math.max(
+                        0,
+                        settleModalData.grossNetSalary,
+                      ).toLocaleString()}
+                      )
+                    </button>
+                    {settleModalData.grossNetSalary > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettleForm({
+                            ...settleForm,
+                            settledAmount: String(
+                              Math.round(settleModalData.grossNetSalary / 2),
+                            ),
+                          })
+                        }
+                        className="text-[11px] text-text-muted hover:underline bg-brand-bg px-2 py-0.5 rounded border border-border-main"
+                      >
+                        نصف المبلغ
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={settleForm.settledAmount}
+                  onChange={(e) =>
+                    setSettleForm({
+                      ...settleForm,
+                      settledAmount: e.target.value,
+                    })
+                  }
+                  className="w-full px-4 py-2.5 bg-brand-bg border border-border-main rounded-xl focus:ring-2 focus:ring-primary outline-none text-text-main font-bold text-base"
+                  placeholder="أدخل المبلغ المسدد..."
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-text-main">
+                  تاريخ الصرف
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={settleForm.date}
+                  onChange={(e) =>
+                    setSettleForm({ ...settleForm, date: e.target.value })
+                  }
+                  className="w-full px-4 py-2 bg-brand-bg border border-border-main rounded-xl focus:ring-2 focus:ring-primary outline-none text-text-main"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-text-main">
+                  طريقة الصرف / ملاحظة
+                </label>
+                <input
+                  type="text"
+                  value={settleForm.note}
+                  onChange={(e) =>
+                    setSettleForm({ ...settleForm, note: e.target.value })
+                  }
+                  className="w-full px-4 py-2 bg-brand-bg border border-border-main rounded-xl focus:ring-2 focus:ring-primary outline-none text-text-main"
+                  placeholder="مثال: نقداً، حوالة عبر بنك الكريمي، شيك..."
+                />
+              </div>
+
+              {/* Dynamic Calculation Preview */}
+              {settleForm.settledAmount !== "" && (
+                <div className="p-3 bg-brand-bg/70 rounded-xl border border-border-main text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">المبلغ المدفوع:</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      {Number(settleForm.settledAmount || 0).toLocaleString()} ر.ي
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">الرصيد المتبقي المرحّل:</span>
+                    <span
+                      className={`font-bold ${
+                        calculateCarryForward(
+                          settleModalData.grossNetSalary,
+                          Number(settleForm.settledAmount || 0),
+                        ) > 0
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-emerald-600 dark:text-emerald-400"
+                      }`}
+                    >
+                      {calculateCarryForward(
+                        settleModalData.grossNetSalary,
+                        Number(settleForm.settledAmount || 0),
+                      ).toLocaleString()}{" "}
+                      ر.ي
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeSettleModal}
+                  className="px-4 py-2 text-xs font-semibold text-text-main bg-surface border border-border-main rounded-xl hover:bg-brand-bg transition-colors"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 text-xs font-bold text-white bg-success rounded-xl hover:bg-emerald-700 flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <Check className="w-4 h-4" />
+                  {settleModalData.existingSettlement
+                    ? "حفظ التعديل"
+                    : "تأكيد تسجيل السداد"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
       {/* Edit Record Modal */}

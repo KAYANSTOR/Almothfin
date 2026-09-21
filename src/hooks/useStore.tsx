@@ -47,7 +47,8 @@ interface StoreContextType {
   addAdvance: (advance: Omit<Advance, "id">) => Promise<void>;
   updateAdvance: (id: string, advance: Partial<Advance>) => Promise<void>;
   deleteAdvance: (id: string) => Promise<void>;
-  settlePayroll: (settlement: Omit<PayrollSettlement, "id" | "settledAt">) => Promise<void>;
+  settlePayroll: (settlement: Omit<PayrollSettlement, "id" | "settledAt"> & { settledAt?: number }) => Promise<void>;
+  deleteSettlement: (id: string) => Promise<void>;
 
   isSyncing: boolean;
   lastSyncTime: string | null;
@@ -303,12 +304,27 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const settlePayroll = async (settlement: Omit<PayrollSettlement, "id" | "settledAt">) => {
+  const settlePayroll = async (
+    settlement: Omit<PayrollSettlement, "id" | "settledAt"> & {
+      settledAt?: number;
+    },
+  ) => {
     if (!activeCompanyId) return;
     const id = `${settlement.workerId}_${settlement.month}`;
     await setDoc(doc(db, "companies", activeCompanyId, "settlements", id), {
-      ...settlement, id, settledAt: Date.now(),
+      ...settlement,
+      id,
+      settledAt: settlement.settledAt || Date.now(),
     });
+  };
+
+  const deleteSettlement = async (id: string) => {
+    if (!activeCompanyId) return;
+    try {
+      await deleteDoc(doc(db, "companies", activeCompanyId, "settlements", id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
@@ -336,6 +352,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         updateAdvance,
         deleteAdvance,
         settlePayroll,
+        deleteSettlement,
         isSyncing,
         lastSyncTime,
       }}

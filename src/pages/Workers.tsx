@@ -23,6 +23,7 @@ import {
 import {
   getMonthlySalaryForDate,
   getSalaryHistory,
+  getCurrentMonthlySalary,
 } from "../lib/salaryHistory";
 export default function Workers() {
   const {
@@ -58,6 +59,8 @@ export default function Workers() {
     note: "",
   });
   const [salaryError, setSalaryError] = useState("");
+  const [salarySuccess, setSalarySuccess] = useState("");
+  const [editingSalaryIndex, setEditingSalaryIndex] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     workerNumber: "",
     name: "",
@@ -96,16 +99,21 @@ export default function Workers() {
   };
   const openSalaryHistory = (worker: Worker) => {
     setSalaryModalWorker(worker);
+    const currentSalary = getCurrentMonthlySalary(worker);
     setSalaryForm({
       effectiveDate: new Date().toISOString().split("T")[0],
-      monthlySalary: "",
+      monthlySalary: currentSalary ? String(currentSalary) : String(worker.monthlySalary || ""),
       note: "",
     });
+    setEditingSalaryIndex(null);
     setSalaryError("");
+    setSalarySuccess("");
   };
   const closeSalaryHistory = () => {
     setSalaryModalWorker(null);
+    setEditingSalaryIndex(null);
     setSalaryError("");
+    setSalarySuccess("");
   };
   const handleSalarySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,14 +129,40 @@ export default function Workers() {
       return;
     }
     const history = getSalaryHistory(salaryModalWorker);
-    if (history.some((change) => change.effectiveDate === effectiveDate)) {
-      setSalaryError("يوجد تغيير راتب مسجل بهذا التاريخ. استخدم تاريخًا آخر.");
-      return;
+    let nextHistory: SalaryChange[];
+
+    if (editingSalaryIndex !== null && editingSalaryIndex >= 0 && editingSalaryIndex < history.length) {
+      nextHistory = history.map((change, idx) =>
+        idx === editingSalaryIndex
+          ? {
+              effectiveDate,
+              monthlySalary,
+              note: salaryForm.note.trim() || change.note || "تحديث الراتب",
+            }
+          : change,
+      );
+    } else {
+      const existingDateIdx = history.findIndex((change) => change.effectiveDate === effectiveDate);
+      if (existingDateIdx >= 0) {
+        nextHistory = history.map((change, idx) =>
+          idx === existingDateIdx
+            ? {
+                effectiveDate,
+                monthlySalary,
+                note: salaryForm.note.trim() || change.note || "تحديث الراتب",
+              }
+            : change,
+        );
+      } else {
+        nextHistory = [
+          ...history,
+          { effectiveDate, monthlySalary, note: salaryForm.note.trim() },
+        ];
+      }
     }
-    const nextHistory: SalaryChange[] = [
-      ...history,
-      { effectiveDate, monthlySalary, note: salaryForm.note.trim() },
-    ].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+
+    nextHistory.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+
     const updatedWorker = { ...salaryModalWorker, salaryHistory: nextHistory };
     const currentSalary = getMonthlySalaryForDate(
       updatedWorker,
@@ -139,18 +173,15 @@ export default function Workers() {
       monthlySalary: currentSalary,
     });
     setSalaryModalWorker({ ...updatedWorker, monthlySalary: currentSalary });
-    setSalaryForm({
-      effectiveDate: new Date().toISOString().split("T")[0],
-      monthlySalary: "",
-      note: "",
-    });
+    setEditingSalaryIndex(null);
+    setSalarySuccess(`تم بنجاح حفظ الراتب (${monthlySalary.toLocaleString()} ر.ي) اعتبارا من ${effectiveDate}.`);
     setSalaryError("");
   };
-  const handleSalaryDelete = (change: SalaryChange) => {
+  const handleSalaryDelete = (change: SalaryChange, index: number) => {
     if (!salaryModalWorker) return;
     const history = getSalaryHistory(salaryModalWorker);
     if (history.length <= 1) {
-      setSalaryError("لا يمكن حذف الراتب الأساسي الوحيد للعامل.");
+      setSalaryError("لا يمكن حذف الراتب الأساسي الوحيد للعامل. يمكنك تعديل قيمته عبر زر التعديل.");
       return;
     }
     if (
@@ -159,13 +190,7 @@ export default function Workers() {
       )
     )
       return;
-    const nextHistory = history.filter(
-      (item) =>
-        !(
-          item.effectiveDate === change.effectiveDate &&
-          item.monthlySalary === change.monthlySalary
-        ),
-    );
+    const nextHistory = history.filter((_, idx) => idx !== index);
     const updatedWorker = { ...salaryModalWorker, salaryHistory: nextHistory };
     const currentSalary = getMonthlySalaryForDate(
       updatedWorker,
@@ -176,6 +201,8 @@ export default function Workers() {
       monthlySalary: currentSalary,
     });
     setSalaryModalWorker({ ...updatedWorker, monthlySalary: currentSalary });
+    setEditingSalaryIndex(null);
+    setSalarySuccess("تم حذف تغيير الراتب بنجاح.");
     setSalaryError("");
   };
   const handleSubmit = (e: React.FormEvent) => {
@@ -192,30 +219,35 @@ export default function Workers() {
     if (editingWorker) {
       const currentSalary = Number(editingWorker.monthlySalary) || 0;
       if (monthlySalary !== currentSalary) {
-        const today = new Date().toISOString().split("T")[0];
         const history = getSalaryHistory(editingWorker);
-        const nextHistory = history.some(
-          (change) => change.effectiveDate === today,
-        )
-          ? history.map((change) =>
-              change.effectiveDate === today
-                ? {
-                    ...change,
-                    monthlySalary,
-                    note: change.note || "تعديل الراتب من بيانات العامل",
-                  }
-                : change,
-            )
-          : [
+        let nextHistory: SalaryChange[];
+        if (history.length <= 1) {
+          nextHistory = [
+            {
+              effectiveDate: editingWorker.joinDate || formData.joinDate,
+              monthlySalary,
+              note: "الراتب الأساسي المعدّل",
+            },
+          ];
+        } else {
+          const today = new Date().toISOString().split("T")[0];
+          const hasToday = history.some((c) => c.effectiveDate === today);
+          if (hasToday) {
+            nextHistory = history.map((c) =>
+              c.effectiveDate === today
+                ? { ...c, monthlySalary, note: c.note || "تعديل الراتب من بيانات العامل" }
+                : c,
+            );
+          } else {
+            nextHistory = [
               ...history,
-              {
-                effectiveDate: today,
-                monthlySalary,
-                note: "تعديل الراتب من بيانات العامل",
-              },
+              { effectiveDate: today, monthlySalary, note: "تعديل الراتب من بيانات العامل" },
             ].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+          }
+        }
         updateWorker(editingWorker.id, {
           ...workerData,
+          monthlySalary,
           salaryHistory: nextHistory,
         });
       } else {
@@ -879,56 +911,110 @@ export default function Workers() {
                   </span>
                 </div>
                 <div className="space-y-2">
-                  {getSalaryHistory(salaryModalWorker).map((change, index) => (
-                    <div
-                      key={`${change.effectiveDate}-${change.monthlySalary}-${index}`}
-                      className="flex items-center justify-between gap-3 rounded-xl border border-border-main bg-brand-bg px-4 py-3"
-                    >
-                      <div className=" min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-text-main">
-                            {change.monthlySalary.toLocaleString()} ر.ي
-                          </span>
-                          {index === 0 && (
-                            <span className="rounded-md bg-border-main px-2 py-0.5 text-[11px] font-medium text-text-main">
-                              الراتب الأساسي
+                  {getSalaryHistory(salaryModalWorker).map((change, index) => {
+                    const isBeingEdited = editingSalaryIndex === index;
+                    return (
+                      <div
+                        key={`${change.effectiveDate}-${change.monthlySalary}-${index}`}
+                        className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 transition-colors ${
+                          isBeingEdited
+                            ? "border-primary bg-primary/10 ring-1 ring-primary"
+                            : "border-border-main bg-brand-bg"
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-text-main">
+                              {change.monthlySalary.toLocaleString()} ر.ي
                             </span>
+                            {index === 0 && (
+                              <span className="rounded-md bg-border-main px-2 py-0.5 text-[11px] font-medium text-text-main">
+                                الراتب الأساسي
+                              </span>
+                            )}
+                            {isBeingEdited && (
+                              <span className="rounded-md bg-primary text-white px-2 py-0.5 text-[11px] font-bold">
+                                جاري التعديل...
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-xs text-text-muted">
+                            يسري من: <span dir="ltr">{change.effectiveDate}</span>
+                            {change.note ? ` — ${change.note}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSalaryIndex(index);
+                              setSalaryForm({
+                                effectiveDate: change.effectiveDate,
+                                monthlySalary: String(change.monthlySalary),
+                                note: change.note || "",
+                              });
+                              setSalaryError("");
+                              setSalarySuccess("");
+                            }}
+                            className="shrink-0 rounded-lg p-2 text-primary hover:bg-primary/10 transition-colors"
+                            title="تعديل هذا الراتب"
+                            aria-label={`تعديل راتب بتاريخ ${change.effectiveDate}`}
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          {index > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleSalaryDelete(change, index)}
+                              className="shrink-0 rounded-lg p-2 text-danger hover:bg-danger/10 transition-colors"
+                              title="حذف تغيير الراتب"
+                              aria-label={`حذف تغيير الراتب بتاريخ ${change.effectiveDate}`}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           )}
                         </div>
-                        <p className="mt-1 text-xs text-text-muted">
-                          يسري من: <span dir="ltr">{change.effectiveDate}</span>
-                          {change.note ? ` — ${change.note}` : ""}
-                        </p>
                       </div>
-                      {index > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleSalaryDelete(change)}
-                          className="shrink-0 rounded-lg p-2 text-danger hover:bg-danger/10"
-                          title="حذف تغيير الراتب"
-                          aria-label={`حذف تغيير الراتب بتاريخ ${change.effectiveDate}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
               <form
                 onSubmit={handleSalarySubmit}
-                className="rounded-xl border border-border-main p-4"
+                className="rounded-xl border border-border-main p-4 bg-surface"
               >
-                <div className="flex items-center gap-2 mb-4">
-                  <Plus className="w-4 h-4 text-primary" />
-                  <h4 className="font-bold text-text-main">
-                    إضافة تحديث أو زيادة راتب
-                  </h4>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Plus className="w-4 h-4 text-primary" />
+                    <h4 className="font-bold text-text-main">
+                      {editingSalaryIndex !== null
+                        ? "تعديل سجل الراتب المحدد"
+                        : "تحديد أو تحديث الراتب"}
+                    </h4>
+                  </div>
+                  {editingSalaryIndex !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingSalaryIndex(null);
+                        setSalaryForm({
+                          effectiveDate: new Date().toISOString().split("T")[0],
+                          monthlySalary: String(getCurrentMonthlySalary(salaryModalWorker)),
+                          note: "",
+                        });
+                        setSalaryError("");
+                        setSalarySuccess("");
+                      }}
+                      className="text-xs text-primary hover:underline font-medium"
+                    >
+                      إلغاء التعديل والعودة لإضافة جديد
+                    </button>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-text-main">
-                      الراتب الجديد (ر.ي)
+                      {editingSalaryIndex !== null ? "الراتب المعدّل (ر.ي)" : "الراتب الجديد (ر.ي)"}
                     </label>
                     <input
                       type="number"
@@ -947,7 +1033,7 @@ export default function Workers() {
                   </div>
                   <div>
                     <label className="mb-1 block text-sm font-medium text-text-main">
-                      يبدأ من تاريخ
+                      تاريخ السريان
                     </label>
                     <input
                       type="date"
@@ -973,13 +1059,18 @@ export default function Workers() {
                         setSalaryForm({ ...salaryForm, note: e.target.value })
                       }
                       className="w-full rounded-lg border border-border-main bg-brand-bg px-4 py-2 text-text-main outline-none focus:ring-2 focus:ring-primary"
-                      placeholder="مثال: زيادة راتب"
+                      placeholder="مثال: زيادة استحقاق، تسوية الراتب"
                     />
                   </div>
                 </div>
                 {salaryError && (
                   <p className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
                     {salaryError}
+                  </p>
+                )}
+                {salarySuccess && (
+                  <p className="mt-3 rounded-lg bg-success/10 px-3 py-2 text-sm text-success">
+                    {salarySuccess}
                   </p>
                 )}
                 <div className="mt-4 flex items-center justify-end gap-3">
@@ -994,7 +1085,8 @@ export default function Workers() {
                     type="submit"
                     className="inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary"
                   >
-                    <Check className="ml-2 h-4 w-4" /> حفظ التغيير
+                    <Check className="ml-2 h-4 w-4" />
+                    {editingSalaryIndex !== null ? "حفظ تعديل الراتب" : "تأكيد وتحديث الراتب"}
                   </button>
                 </div>
               </form>
