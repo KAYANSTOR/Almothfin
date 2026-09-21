@@ -13,8 +13,9 @@ import {
   Clock,
   RotateCcw,
   Wallet,
+  Loader2,
 } from "lucide-react";
-import html2canvas from "html2canvas";
+import html2canvas from "html2canvas-pro";
 import jsPDF from "jspdf";
 import { format, parseISO, subMonths } from "date-fns";
 import { ar } from "date-fns/locale";
@@ -273,17 +274,22 @@ export default function Statements() {
     }
     return allStatements;
   }, [allStatements, settlementFilter]);
+  const [isExporting, setIsExporting] = useState(false);
+
   const handlePrint = () => {
     window.print();
   };
+
   const handleExportPdf = async () => {
-    if (!printRef.current) return;
-    /* Chrome على Android يوفّر حفظًا موثوقًا عبر معاينة الطباعة، بينما html2canvas قد يفشل مع CSS الهاتف. */ const isAndroid =
-      /Android/i.test(navigator.userAgent);
+    if (!printRef.current || isExporting) return;
+    /* Chrome على Android يوفّر حفظًا موثوقًا عبر معاينة الطباعة، بينما html2canvas قد يفشل مع CSS الهاتف. */
+    const isAndroid = /Android/i.test(navigator.userAgent);
     if (isAndroid) {
       window.print();
       return;
     }
+
+    setIsExporting(true);
     try {
       if (document.fonts?.ready) await document.fonts.ready;
       const canvas = await html2canvas(printRef.current, {
@@ -291,18 +297,33 @@ export default function Statements() {
         useCORS: true,
         backgroundColor: "#ffffff",
         logging: false,
+        onclone: (clonedDoc) => {
+          // إخفاء العناصر غير المخصصة للطباعة في المستند المستنسخ
+          const hiddenElements = clonedDoc.querySelectorAll(".print\\:hidden");
+          hiddenElements.forEach((el) => {
+            (el as HTMLElement).style.setProperty("display", "none", "important");
+          });
+          // إظهار نصوص الطباعة
+          const printBlocks = clonedDoc.querySelectorAll(".print\\:block");
+          printBlocks.forEach((el) => {
+            (el as HTMLElement).style.setProperty("display", "block", "important");
+          });
+        },
       });
+
       const pdf = new jsPDF({
         orientation: "portrait",
         unit: "mm",
         format: "a4",
         compress: true,
       });
+
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const imageWidth = pageWidth;
       const imageHeight = (canvas.height * imageWidth) / canvas.width;
       const imageData = canvas.toDataURL("image/jpeg", 0.92);
+
       for (let offset = 0; offset < imageHeight; offset += pageHeight) {
         if (offset > 0) pdf.addPage();
         pdf.addImage(
@@ -316,13 +337,21 @@ export default function Statements() {
           "FAST",
         );
       }
-      const fileName = selectedWorkerId === "all" ? "كشوفات-جميع-العمال.pdf" : `كشف-حساب-${worker?.name?.replace(/\s+/g, "-") || "العامل"}.pdf`;
+
+      const fileName =
+        selectedWorkerId === "all"
+          ? "كشوفات-جميع-العمال.pdf"
+          : `كشف-حساب-${worker?.name?.replace(/\s+/g, "-") || "العامل"}.pdf`;
       pdf.save(fileName);
     } catch (error) {
       console.error("PDF export error:", error);
-      /* fallback موثوق بدل عرض رسالة فشل فقط. */ window.print();
+      /* fallback موثوق بدل عرض رسالة فشل فقط */
+      window.print();
+    } finally {
+      setIsExporting(false);
     }
   };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 print:hidden">
@@ -336,15 +365,24 @@ export default function Statements() {
           <div className="flex items-center space-x-2 space-x-reverse">
             <button
               onClick={handlePrint}
-              className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-primary rounded-xl shadow-sm hover:bg-primary/90 focus:outline-none"
+              className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-primary rounded-xl shadow-sm hover:bg-primary/90 focus:outline-none transition-colors"
             >
               <Printer className="w-4 h-4 ml-2" /> طباعة
             </button>
             <button
               onClick={handleExportPdf}
-              className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-success rounded-xl shadow-sm hover:bg-emerald-700 focus:outline-none"
+              disabled={isExporting}
+              className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-success rounded-xl shadow-sm hover:bg-emerald-700 focus:outline-none disabled:opacity-60 transition-colors"
             >
-              <FileDown className="w-4 h-4 ml-2" /> تصدير PDF
+              {isExporting ? (
+                <>
+                  <Loader2 className="w-4 h-4 ml-2 animate-spin" /> جاري التصدير...
+                </>
+              ) : (
+                <>
+                  <FileDown className="w-4 h-4 ml-2" /> تصدير PDF
+                </>
+              )}
             </button>
           </div>
         )}
